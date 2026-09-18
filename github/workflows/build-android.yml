@@ -1,0 +1,198 @@
+name: Build DZ LIFE Android AAB
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Android AAB
+    runs-on: ubuntu-latest
+
+    steps:
+
+      # 1. Download repository
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2. Install Node.js
+      # No npm cache because the project currently has no lockfile
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          package-manager-cache: false
+
+      # 3. Check project files
+      - name: Check project
+        shell: bash
+        run: |
+          echo "Checking DZ LIFE project..."
+
+          if [ ! -f "package.json" ]; then
+            echo "ERROR: package.json not found."
+            exit 1
+          fi
+
+          echo "package.json found."
+
+          if [ -f "capacitor.config.ts" ]; then
+            echo "capacitor.config.ts found."
+          elif [ -f "capacitor.config.json" ]; then
+            echo "capacitor.config.json found."
+          else
+            echo "ERROR: Capacitor config not found."
+            exit 1
+          fi
+
+          echo "Project files:"
+          ls -la
+
+      # 4. Install npm dependencies
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      # 5. Run build only if the project has a build script
+      - name: Build web application
+        shell: bash
+        run: |
+          if npm run | grep -q " build"; then
+            echo "Build script found."
+            npm run build
+          else
+            echo "No build script found."
+            echo "Using existing web files."
+          fi
+
+      # 6. Prepare Capacitor web directory
+      - name: Prepare web assets
+        shell: bash
+        run: |
+          echo "Preparing web assets..."
+
+          mkdir -p www
+
+          # If a build generated files inside www, keep them.
+          # Otherwise copy the project web files.
+
+          if [ ! -f "www/index.html" ] && [ -f "index.html" ]; then
+            cp index.html www/index.html
+          fi
+
+          if [ -f "manifest.json" ]; then
+            cp manifest.json www/ || true
+          fi
+
+          if [ -f "service-worker.js" ]; then
+            cp service-worker.js www/ || true
+          fi
+
+          if [ -d "assets" ]; then
+            cp -r assets www/ || true
+          fi
+
+          if [ -d "images" ]; then
+            cp -r images www/ || true
+          fi
+
+          if [ -d "img" ]; then
+            cp -r img www/ || true
+          fi
+
+          if [ -d "icons" ]; then
+            cp -r icons www/ || true
+          fi
+
+          if [ -f "icon-source.png" ]; then
+            cp icon-source.png www/ || true
+          fi
+
+          if [ ! -f "www/index.html" ]; then
+            echo "ERROR: No index.html found for Capacitor."
+            exit 1
+          fi
+
+          echo "Web directory:"
+          find www -maxdepth 2 -type f | sort
+
+      # 7. Verify Capacitor CLI
+      - name: Check Capacitor
+        run: npx cap --version
+
+      # 8. Add Android platform if necessary
+      - name: Prepare Android platform
+        shell: bash
+        run: |
+          if [ -d "android" ]; then
+            echo "Android platform already exists."
+          else
+            echo "Android platform does not exist."
+            echo "Creating Android platform..."
+            npx cap add android
+          fi
+
+      # 9. Sync web project with Android
+      - name: Sync Capacitor
+        run: npx cap sync android
+
+      # 10. Setup Java
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      # 11. Setup Android SDK
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      # 12. Install Android SDK 36
+      - name: Install Android SDK 36
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses || true
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-36" \
+            "build-tools;36.0.0"
+
+      # 13. Make Gradle executable
+      - name: Prepare Gradle
+        run: |
+          cd android
+          chmod +x gradlew
+
+      # 14. Build Release AAB
+      - name: Build Release AAB
+        shell: bash
+        run: |
+          cd android
+          ./gradlew bundleRelease --no-daemon
+
+      # 15. Check generated AAB
+      - name: Check AAB
+        shell: bash
+        run: |
+          echo "Searching for AAB..."
+
+          find android/app/build/outputs -type f -name "*.aab" -print
+
+          if [ ! -f "android/app/build/outputs/bundle/release/app-release.aab" ]; then
+            echo "ERROR: Release AAB was not generated."
+            exit 1
+          fi
+
+          echo "AAB successfully generated."
+
+      # 16. Upload AAB
+      - name: Upload DZ LIFE AAB
+        uses: actions/upload-artifact@v4
+        with:
+          name: DZ-LIFE-release-AAB
+          path: android/app/build/outputs/bundle/release/app-release.aab
+          if-no-files-found: error
